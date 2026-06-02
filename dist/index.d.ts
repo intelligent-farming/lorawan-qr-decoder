@@ -79,9 +79,12 @@ export declare class QrParseError extends Error {
  */
 export declare const KNOWN_LORAWAN_VENDORS: Record<string, string>;
 /**
- * Resolve an OUI to its registered organization. Performs longest-prefix-match
- * against MA-S (36-bit) → MA-M (28-bit) → MA-L (24-bit) assignments — required
- * because many LoRaWAN vendors hold sub-allocations under broader registrations.
+ * Resolve an OUI to its registered organization, and tag it with a LoRaWAN
+ * vendor slug when {@link KNOWN_LORAWAN_VENDORS} has an entry for it.
+ *
+ * Delegates the underlying registry lookup (longest-prefix-match across
+ * MA-L / MA-M / MA-S assignments) to `@intelligentfarming/oui-registry`,
+ * then layers on this module's LoRaWAN-specific vendor catalog.
  *
  * @param devEui 16-character hex DevEUI (case-insensitive).
  * @returns A {@link VendorInfo} on match, or `undefined` if the OUI is unknown.
@@ -95,7 +98,7 @@ export declare const detectVendor: (devEui: string) => VendorInfo | undefined;
  *
  * @example
  * ```ts
- * import { parse } from '@intelligent-farming/lorawan-qr-decoder';
+ * import { parse } from '@intelligentfarming/lorawan-qr-decoder';
  *
  * // TR005 standard
  * parse('LW:D0:70B3D57ED0000001:A84041035660E3AA:AB12');
@@ -110,4 +113,66 @@ export declare const detectVendor: (devEui: string) => VendorInfo | undefined;
  * ```
  */
 export declare const parse: (qr: string) => QrParseResult;
+/** Input accepted by {@link encode} to produce a TR005 v1.0 QR code string. */
+export interface EncodeInput {
+    /** DevEUI — 16 hex chars (case-insensitive, separators allowed). */
+    devEui: string;
+    /** JoinEUI / AppEUI — 16 hex chars. */
+    joinEui: string;
+    /** Vendor-assigned 4-char hex Profile ID. */
+    profileId: string;
+    /** Optional proof-of-ownership token. Must not contain `:`. */
+    ownerToken?: string;
+    /** Optional vendor serial number. Must not contain `:`. */
+    serialNumber?: string;
+    /**
+     * Optional proprietary extension fields, encoded as `P<key>=<value>`.
+     * Keys must match `[A-Za-z0-9]+`; values must not contain `:` or `=`.
+     */
+    proprietary?: Record<string, string>;
+}
+/** Input accepted by {@link encodeLwdp} to produce a Browan-style LWDP URN. */
+export interface LwdpEncodeInput {
+    /** JoinEUI — 16 hex chars. Emitted first per LWDP convention. */
+    joinEui: string;
+    /** DevEUI — 16 hex chars. */
+    devEui: string;
+    /** Product code (alphanumeric, up to 20 chars). */
+    productCode: string;
+    /** Verification token — 4-16 hex chars (typically 8). */
+    token: string;
+}
+/** Thrown when {@link encode} or {@link encodeLwdp} receives invalid input. */
+export declare class QrEncodeError extends Error {
+    /** The field that failed validation. */
+    readonly field: string;
+    constructor(field: string, detail: string);
+}
+/**
+ * Generate a TR005 v1.0 LoRaWAN device identification QR code string.
+ *
+ * Round-trips with {@link parse}: `parse(encode(x))` recovers the same logical
+ * fields (modulo case normalization on hex values). Validates all inputs and
+ * throws {@link QrEncodeError} on bad data — including reserved characters
+ * that would corrupt the format (`:` in tokens, `=` in proprietary keys).
+ *
+ * @example
+ * ```ts
+ * encode({
+ *   devEui: 'A84041035660E3AA',
+ *   joinEui: '70B3D57ED0000001',
+ *   profileId: 'AB12',
+ *   ownerToken: 'OWNER123',
+ *   serialNumber: 'SN0001',
+ *   proprietary: { foo: 'bar' },
+ * });
+ * // → 'LW:D0:70B3D57ED0000001:A84041035660E3AA:AB12:OWNER123:SN0001:Pfoo=bar'
+ * ```
+ */
+export declare const encode: (input: EncodeInput) => string;
+/**
+ * Generate a Browan / Gemtek `URN:LWDP:` QR string. JoinEUI is emitted first
+ * per LWDP convention. Round-trips with the LWDP parse strategy.
+ */
+export declare const encodeLwdp: (input: LwdpEncodeInput) => string;
 //# sourceMappingURL=index.d.ts.map

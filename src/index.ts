@@ -24,8 +24,10 @@
  * @packageDocumentation
  */
 
-import fs from 'fs';
-import path from 'path';
+import { detectVendor as registryDetectVendor } from '@intelligentfarming/oui-registry';
+import {
+  parseDevEui, parseJoinEui, normalize, CredentialFormatError,
+} from '@intelligentfarming/lorawan-credential-format';
 
 /* -------------------------------------------------------------------------- */
 /* Public types                                                                */
@@ -110,37 +112,22 @@ export const KNOWN_LORAWAN_VENDORS: Record<string, string> = {
   '58A0CB': 'browan',
 };
 
-const BUNDLED_OUIS = path.join(__dirname, '..', 'data', 'ouis.json');
-
-let _ouis: Record<string, string> | undefined;
-
-const loadOuis = (): Record<string, string> => {
-  if (_ouis) return _ouis;
-  _ouis = JSON.parse(fs.readFileSync(BUNDLED_OUIS, 'utf8'));
-  return _ouis!;
-};
-
 /**
- * Resolve an OUI to its registered organization. Performs longest-prefix-match
- * against MA-S (36-bit) → MA-M (28-bit) → MA-L (24-bit) assignments — required
- * because many LoRaWAN vendors hold sub-allocations under broader registrations.
+ * Resolve an OUI to its registered organization, and tag it with a LoRaWAN
+ * vendor slug when {@link KNOWN_LORAWAN_VENDORS} has an entry for it.
+ *
+ * Delegates the underlying registry lookup (longest-prefix-match across
+ * MA-L / MA-M / MA-S assignments) to `@intelligentfarming/oui-registry`,
+ * then layers on this module's LoRaWAN-specific vendor catalog.
  *
  * @param devEui 16-character hex DevEUI (case-insensitive).
  * @returns A {@link VendorInfo} on match, or `undefined` if the OUI is unknown.
  */
 export const detectVendor = (devEui: string): VendorInfo | undefined => {
-  const eui = devEui.toUpperCase();
-  if (!/^[0-9A-F]{16}$/.test(eui)) return undefined;
-  const map = loadOuis();
-  for (const len of [9, 7, 6] as const) {
-    const key = eui.slice(0, len);
-    const name = map[key];
-    if (name) {
-      const id = KNOWN_LORAWAN_VENDORS[eui.slice(0, 6)];
-      return { oui: key, name, knownLorawanVendor: !!id, id };
-    }
-  }
-  return undefined;
+  const match = registryDetectVendor(devEui);
+  if (!match) return undefined;
+  const id = KNOWN_LORAWAN_VENDORS[devEui.toUpperCase().slice(0, 6)];
+  return { oui: match.oui, name: match.name, knownLorawanVendor: !!id, id };
 };
 
 /* -------------------------------------------------------------------------- */
@@ -155,7 +142,7 @@ export const detectVendor = (devEui: string): VendorInfo | undefined => {
  *
  * @example
  * ```ts
- * import { parse } from '@intelligent-farming/lorawan-qr-decoder';
+ * import { parse } from '@intelligentfarming/lorawan-qr-decoder';
  *
  * // TR005 standard
  * parse('LW:D0:70B3D57ED0000001:A84041035660E3AA:AB12');
@@ -462,7 +449,156 @@ const finalize = (partial: Partial<QrParseResult>, source: ParseSource, raw: str
 };
 
 /* -------------------------------------------------------------------------- */
+/* Public types: encoding                                                      */
+/* -------------------------------------------------------------------------- */
+
+/** Input accepted by {@link encode} to produce a TR005 v1.0 QR code string. */
+export interface EncodeInput {
+  /** DevEUI — 16 hex chars (case-insensitive, separators allowed). */
+  devEui: string;
+  /** JoinEUI / AppEUI — 16 hex chars. */
+  joinEui: string;
+  /** Vendor-assigned 4-char hex Profile ID. */
+  profileId: string;
+  /** Optional proof-of-ownership token. Must not contain `:`. */
+  ownerToken?: string;
+  /** Optional vendor serial number. Must not contain `:`. */
+  serialNumber?: string;
+  /**
+   * Optional proprietary extension fields, encoded as `P<key>=<value>`.
+   * Keys must match `[A-Za-z0-9]+`; values must not contain `:` or `=`.
+   */
+  proprietary?: Record<string, string>;
+}
+
+/** Input accepted by {@link encodeLwdp} to produce a Browan-style LWDP URN. */
+export interface LwdpEncodeInput {
+  /** JoinEUI — 16 hex chars. Emitted first per LWDP convention. */
+  joinEui: string;
+  /** DevEUI — 16 hex chars. */
+  devEui: string;
+  /** Product code (alphanumeric, up to 20 chars). */
+  productCode: string;
+  /** Verification token — 4-16 hex chars (typically 8). */
+  token: string;
+}
+
+/** Thrown when {@link encode} or {@link encodeLwdp} receives invalid input. */
+export class QrEncodeError extends Error {
+  /** The field that failed validation. */
+  readonly field: string;
+  constructor(field: string, detail: string) {
+    super(`Invalid ${field}: ${detail}`);
+    this.name = 'QrEncodeError';
+    this.field = field;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Encoder: TR005                                                              */
+/* -------------------------------------------------------------------------- */
+
+const PROFILE_ID_RE = /^[0-9A-Fa-f]{4}$/;
+const PROPRIETARY_KEY_RE = /^[A-Za-z0-9]+$/;
+
+/**
+ * Generate a TR005 v1.0 LoRaWAN device identification QR code string.
+ *
+ * Round-trips with {@link parse}: `parse(encode(x))` recovers the same logical
+ * fields (modulo case normalization on hex values). Validates all inputs and
+ * throws {@link QrEncodeError} on bad data — including reserved characters
+ * that would corrupt the format (`:` in tokens, `=` in proprietary keys).
+ *
+ * @example
+ * ```ts
+ * encode({
+ *   devEui: 'A84041035660E3AA',
+ *   joinEui: '70B3D57ED0000001',
+ *   profileId: 'AB12',
+ *   ownerToken: 'OWNER123',
+ *   serialNumber: 'SN0001',
+ *   proprietary: { foo: 'bar' },
+ * });
+ * // → 'LW:D0:70B3D57ED0000001:A84041035660E3AA:AB12:OWNER123:SN0001:Pfoo=bar'
+ * ```
+ */
+export const encode = (input: EncodeInput): string => {
+  const devEui = parseHexField('devEui', input.devEui, parseDevEui);
+  const joinEui = parseHexField('joinEui', input.joinEui, parseJoinEui);
+  const profileId = normalize(input.profileId ?? '');
+  if (!PROFILE_ID_RE.test(profileId)) {
+    throw new QrEncodeError('profileId', `expected 4 hex chars, got ${JSON.stringify(input.profileId)}`);
+  }
+
+  const fields = [`LW:D0:${joinEui}:${devEui}:${profileId}`];
+
+  // TR005 positional extension fields: OwnerToken, then SerNum. Both forbid `:`
+  // since it's the outer field separator. Trailing-empty positional fields are
+  // dropped — only emit them when needed to keep a later field reachable.
+  const owner = input.ownerToken;
+  const serial = input.serialNumber;
+  const proprietary = input.proprietary;
+
+  if (owner !== undefined) assertNoColon('ownerToken', owner);
+  if (serial !== undefined) assertNoColon('serialNumber', serial);
+
+  if (owner !== undefined || serial !== undefined || proprietary) {
+    fields.push(owner ?? '');
+  }
+  if (serial !== undefined || proprietary) {
+    fields.push(serial ?? '');
+  }
+  if (proprietary) {
+    for (const [k, v] of Object.entries(proprietary)) {
+      if (!PROPRIETARY_KEY_RE.test(k)) {
+        throw new QrEncodeError('proprietary', `key ${JSON.stringify(k)} must match [A-Za-z0-9]+`);
+      }
+      if (v.includes(':')) throw new QrEncodeError('proprietary', `value for ${k} must not contain ':'`);
+      fields.push(`P${k}=${v}`);
+    }
+  }
+
+  return fields.join(':');
+};
+
+/* -------------------------------------------------------------------------- */
+/* Encoder: LWDP                                                               */
+/* -------------------------------------------------------------------------- */
+
+const LWDP_PRODUCT_RE = /^[A-Za-z0-9]{1,20}$/;
+const LWDP_TOKEN_RE = /^[0-9A-Fa-f]{4,16}$/;
+
+/**
+ * Generate a Browan / Gemtek `URN:LWDP:` QR string. JoinEUI is emitted first
+ * per LWDP convention. Round-trips with the LWDP parse strategy.
+ */
+export const encodeLwdp = (input: LwdpEncodeInput): string => {
+  const joinEui = parseHexField('joinEui', input.joinEui, parseJoinEui);
+  const devEui = parseHexField('devEui', input.devEui, parseDevEui);
+  if (!LWDP_PRODUCT_RE.test(input.productCode ?? '')) {
+    throw new QrEncodeError('productCode', `expected 1-20 alphanumeric chars, got ${JSON.stringify(input.productCode)}`);
+  }
+  const token = normalize(input.token ?? '');
+  if (!LWDP_TOKEN_RE.test(token)) {
+    throw new QrEncodeError('token', `expected 4-16 hex chars, got ${JSON.stringify(input.token)}`);
+  }
+  return `URN:LWDP:${joinEui}:${devEui}:${input.productCode}:${token}`;
+};
+
+/* -------------------------------------------------------------------------- */
 /* Internals                                                                   */
 /* -------------------------------------------------------------------------- */
+
+const parseHexField = (field: string, input: string, parser: (s: string) => string): string => {
+  try { return parser(input); }
+  catch (err) {
+    if (err instanceof CredentialFormatError) throw new QrEncodeError(field, err.message);
+    throw err;
+  }
+};
+
+const assertNoColon = (field: string, value: string): void => {
+  if (value.includes(':')) throw new QrEncodeError(field, "must not contain ':' (reserved as TR005 field separator)");
+};
 
 const truncate = (s: string, n: number): string => s.length <= n ? s : s.slice(0, n - 1) + '…';

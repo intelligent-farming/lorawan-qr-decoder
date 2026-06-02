@@ -24,13 +24,10 @@
  *
  * @packageDocumentation
  */
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.parse = exports.detectVendor = exports.KNOWN_LORAWAN_VENDORS = exports.QrParseError = void 0;
-const fs_1 = __importDefault(require("fs"));
-const path_1 = __importDefault(require("path"));
+exports.encodeLwdp = exports.encode = exports.QrEncodeError = exports.parse = exports.detectVendor = exports.KNOWN_LORAWAN_VENDORS = exports.QrParseError = void 0;
+const oui_registry_1 = require("@intelligentfarming/oui-registry");
+const lorawan_credential_format_1 = require("@intelligentfarming/lorawan-credential-format");
 /** Thrown when no strategy can extract at least a DevEUI from the input. */
 class QrParseError extends Error {
     constructor(raw, attempted) {
@@ -64,36 +61,23 @@ exports.KNOWN_LORAWAN_VENDORS = {
     E8E1E1: 'browan',
     '58A0CB': 'browan',
 };
-const BUNDLED_OUIS = path_1.default.join(__dirname, '..', 'data', 'ouis.json');
-let _ouis;
-const loadOuis = () => {
-    if (_ouis)
-        return _ouis;
-    _ouis = JSON.parse(fs_1.default.readFileSync(BUNDLED_OUIS, 'utf8'));
-    return _ouis;
-};
 /**
- * Resolve an OUI to its registered organization. Performs longest-prefix-match
- * against MA-S (36-bit) → MA-M (28-bit) → MA-L (24-bit) assignments — required
- * because many LoRaWAN vendors hold sub-allocations under broader registrations.
+ * Resolve an OUI to its registered organization, and tag it with a LoRaWAN
+ * vendor slug when {@link KNOWN_LORAWAN_VENDORS} has an entry for it.
+ *
+ * Delegates the underlying registry lookup (longest-prefix-match across
+ * MA-L / MA-M / MA-S assignments) to `@intelligentfarming/oui-registry`,
+ * then layers on this module's LoRaWAN-specific vendor catalog.
  *
  * @param devEui 16-character hex DevEUI (case-insensitive).
  * @returns A {@link VendorInfo} on match, or `undefined` if the OUI is unknown.
  */
 const detectVendor = (devEui) => {
-    const eui = devEui.toUpperCase();
-    if (!/^[0-9A-F]{16}$/.test(eui))
+    const match = (0, oui_registry_1.detectVendor)(devEui);
+    if (!match)
         return undefined;
-    const map = loadOuis();
-    for (const len of [9, 7, 6]) {
-        const key = eui.slice(0, len);
-        const name = map[key];
-        if (name) {
-            const id = exports.KNOWN_LORAWAN_VENDORS[eui.slice(0, 6)];
-            return { oui: key, name, knownLorawanVendor: !!id, id };
-        }
-    }
-    return undefined;
+    const id = exports.KNOWN_LORAWAN_VENDORS[devEui.toUpperCase().slice(0, 6)];
+    return { oui: match.oui, name: match.name, knownLorawanVendor: !!id, id };
 };
 exports.detectVendor = detectVendor;
 /* -------------------------------------------------------------------------- */
@@ -107,7 +91,7 @@ exports.detectVendor = detectVendor;
  *
  * @example
  * ```ts
- * import { parse } from '@intelligent-farming/lorawan-qr-decoder';
+ * import { parse } from '@intelligentfarming/lorawan-qr-decoder';
  *
  * // TR005 standard
  * parse('LW:D0:70B3D57ED0000001:A84041035660E3AA:AB12');
@@ -421,8 +405,116 @@ const finalize = (partial, source, raw) => {
         out.vendor = vendor;
     return out;
 };
+/** Thrown when {@link encode} or {@link encodeLwdp} receives invalid input. */
+class QrEncodeError extends Error {
+    constructor(field, detail) {
+        super(`Invalid ${field}: ${detail}`);
+        this.name = 'QrEncodeError';
+        this.field = field;
+    }
+}
+exports.QrEncodeError = QrEncodeError;
+/* -------------------------------------------------------------------------- */
+/* Encoder: TR005                                                              */
+/* -------------------------------------------------------------------------- */
+const PROFILE_ID_RE = /^[0-9A-Fa-f]{4}$/;
+const PROPRIETARY_KEY_RE = /^[A-Za-z0-9]+$/;
+/**
+ * Generate a TR005 v1.0 LoRaWAN device identification QR code string.
+ *
+ * Round-trips with {@link parse}: `parse(encode(x))` recovers the same logical
+ * fields (modulo case normalization on hex values). Validates all inputs and
+ * throws {@link QrEncodeError} on bad data — including reserved characters
+ * that would corrupt the format (`:` in tokens, `=` in proprietary keys).
+ *
+ * @example
+ * ```ts
+ * encode({
+ *   devEui: 'A84041035660E3AA',
+ *   joinEui: '70B3D57ED0000001',
+ *   profileId: 'AB12',
+ *   ownerToken: 'OWNER123',
+ *   serialNumber: 'SN0001',
+ *   proprietary: { foo: 'bar' },
+ * });
+ * // → 'LW:D0:70B3D57ED0000001:A84041035660E3AA:AB12:OWNER123:SN0001:Pfoo=bar'
+ * ```
+ */
+const encode = (input) => {
+    const devEui = parseHexField('devEui', input.devEui, lorawan_credential_format_1.parseDevEui);
+    const joinEui = parseHexField('joinEui', input.joinEui, lorawan_credential_format_1.parseJoinEui);
+    const profileId = (0, lorawan_credential_format_1.normalize)(input.profileId ?? '');
+    if (!PROFILE_ID_RE.test(profileId)) {
+        throw new QrEncodeError('profileId', `expected 4 hex chars, got ${JSON.stringify(input.profileId)}`);
+    }
+    const fields = [`LW:D0:${joinEui}:${devEui}:${profileId}`];
+    // TR005 positional extension fields: OwnerToken, then SerNum. Both forbid `:`
+    // since it's the outer field separator. Trailing-empty positional fields are
+    // dropped — only emit them when needed to keep a later field reachable.
+    const owner = input.ownerToken;
+    const serial = input.serialNumber;
+    const proprietary = input.proprietary;
+    if (owner !== undefined)
+        assertNoColon('ownerToken', owner);
+    if (serial !== undefined)
+        assertNoColon('serialNumber', serial);
+    if (owner !== undefined || serial !== undefined || proprietary) {
+        fields.push(owner ?? '');
+    }
+    if (serial !== undefined || proprietary) {
+        fields.push(serial ?? '');
+    }
+    if (proprietary) {
+        for (const [k, v] of Object.entries(proprietary)) {
+            if (!PROPRIETARY_KEY_RE.test(k)) {
+                throw new QrEncodeError('proprietary', `key ${JSON.stringify(k)} must match [A-Za-z0-9]+`);
+            }
+            if (v.includes(':'))
+                throw new QrEncodeError('proprietary', `value for ${k} must not contain ':'`);
+            fields.push(`P${k}=${v}`);
+        }
+    }
+    return fields.join(':');
+};
+exports.encode = encode;
+/* -------------------------------------------------------------------------- */
+/* Encoder: LWDP                                                               */
+/* -------------------------------------------------------------------------- */
+const LWDP_PRODUCT_RE = /^[A-Za-z0-9]{1,20}$/;
+const LWDP_TOKEN_RE = /^[0-9A-Fa-f]{4,16}$/;
+/**
+ * Generate a Browan / Gemtek `URN:LWDP:` QR string. JoinEUI is emitted first
+ * per LWDP convention. Round-trips with the LWDP parse strategy.
+ */
+const encodeLwdp = (input) => {
+    const joinEui = parseHexField('joinEui', input.joinEui, lorawan_credential_format_1.parseJoinEui);
+    const devEui = parseHexField('devEui', input.devEui, lorawan_credential_format_1.parseDevEui);
+    if (!LWDP_PRODUCT_RE.test(input.productCode ?? '')) {
+        throw new QrEncodeError('productCode', `expected 1-20 alphanumeric chars, got ${JSON.stringify(input.productCode)}`);
+    }
+    const token = (0, lorawan_credential_format_1.normalize)(input.token ?? '');
+    if (!LWDP_TOKEN_RE.test(token)) {
+        throw new QrEncodeError('token', `expected 4-16 hex chars, got ${JSON.stringify(input.token)}`);
+    }
+    return `URN:LWDP:${joinEui}:${devEui}:${input.productCode}:${token}`;
+};
+exports.encodeLwdp = encodeLwdp;
 /* -------------------------------------------------------------------------- */
 /* Internals                                                                   */
 /* -------------------------------------------------------------------------- */
+const parseHexField = (field, input, parser) => {
+    try {
+        return parser(input);
+    }
+    catch (err) {
+        if (err instanceof lorawan_credential_format_1.CredentialFormatError)
+            throw new QrEncodeError(field, err.message);
+        throw err;
+    }
+};
+const assertNoColon = (field, value) => {
+    if (value.includes(':'))
+        throw new QrEncodeError(field, "must not contain ':' (reserved as TR005 field separator)");
+};
 const truncate = (s, n) => s.length <= n ? s : s.slice(0, n - 1) + '…';
 //# sourceMappingURL=index.js.map
