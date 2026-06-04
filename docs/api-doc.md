@@ -1,4 +1,4 @@
-# @intelligentfarming/lorawan-qr-decoder
+# @intelligent-farming/lorawan-qr-decoder
 
 Decode the QR code printed on a LoRaWAN device into a structured object of
 EUIs, keys, and (when available) the LoRa Alliance TR005 ownership token
@@ -597,7 +597,7 @@ Resolve an OUI to its registered organization, and tag it with a LoRaWAN
 vendor slug when [KNOWN\_LORAWAN\_VENDORS](#known_lorawan_vendors) has an entry for it.
 
 Delegates the underlying registry lookup (longest-prefix-match across
-MA-L / MA-M / MA-S assignments) to `@intelligentfarming/oui-registry`,
+MA-L / MA-M / MA-S assignments) to `@intelligent-farming/oui-registry`,
 then layers on this module's LoRaWAN-specific vendor catalog.
 
 #### Parameters
@@ -696,7 +696,7 @@ then a hex-scan disambiguated by OUI registry lookup.
 #### Example
 
 ```ts
-import { parse } from '@intelligentfarming/lorawan-qr-decoder';
+import { parse } from '@intelligent-farming/lorawan-qr-decoder';
 
 // TR005 standard
 parse('LW:D0:70B3D57ED0000001:A84041035660E3AA:AB12');

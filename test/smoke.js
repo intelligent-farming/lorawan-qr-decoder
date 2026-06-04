@@ -3,10 +3,20 @@ const assert = require('node:assert/strict');
 
 const {
   parse, encode, encodeLwdp,
-  detectVendor,
+  detectVendor, createParser,
   QrParseError, QrEncodeError,
   KNOWN_LORAWAN_VENDORS,
 } = require('..');
+
+// Minimal injected OUI registry — exercises the browser-friendly code path
+// without pulling in the full 1.8 MB bundled snapshot.
+const INJECTED_REGISTRY = {
+  A84041: 'Dragino Technology Co., Limited',
+  '24E124': 'Xiamen Milesight IoT Co., Ltd.',
+  '2CF7F1': 'Seeed Technology Inc.',
+  '58A0CB': 'TrackNet, Inc',
+  E8E1E1: 'Gemtek Technology Co., Ltd.',
+};
 
 // Real-world fixture set — every DevEUI here has an OUI that maps to a real
 // vendor in the IEEE registry; every AppKey is a 32-hex literal that round-trips.
@@ -302,6 +312,59 @@ describe('KNOWN_LORAWAN_VENDORS catalog', () => {
     for (const oui of Object.keys(KNOWN_LORAWAN_VENDORS)) {
       assert.match(oui, /^[0-9A-F]{6}$/, `bad OUI key shape: ${oui}`);
     }
+  });
+});
+
+describe('OuiRegistry injection (browser-friendly path)', () => {
+  test('parse(qr, { ouiRegistry }) uses the injected registry instead of fs', () => {
+    const out = parse(`LW:D0:${FIX.ttnJoinEui}:${FIX.draginoDevEui}:AB12`, {
+      ouiRegistry: INJECTED_REGISTRY,
+    });
+    assert.equal(out.devEui, FIX.draginoDevEui);
+    assert.equal(out.vendor.id, 'dragino');
+    assert.equal(out.vendor.knownLorawanVendor, true);
+  });
+
+  test('parse with an injected empty registry yields no vendor info', () => {
+    const out = parse(`LW:D0:${FIX.ttnJoinEui}:${FIX.draginoDevEui}:AB12`, {
+      ouiRegistry: {},
+    });
+    assert.equal(out.devEui, FIX.draginoDevEui);
+    assert.equal(out.vendor, undefined);
+  });
+
+  test('detectVendor accepts an injected registry', () => {
+    const v = detectVendor(FIX.draginoDevEui, INJECTED_REGISTRY);
+    assert.equal(v.oui, 'A84041');
+    assert.equal(v.id, 'dragino');
+  });
+
+  test('hex-scan vendor disambiguation works through the injected registry', () => {
+    // The 32-hex split heuristic looks up the first 16 chars' OUI to decide
+    // whether the run is DevEUI+JoinEUI or an AppKey. Injecting Seeed makes
+    // it pick the right interpretation.
+    const qr = `${FIX.seeedDevEui}${FIX.seeedJoinEui}:0:1000468:114992868224900030`;
+    const out = parse(qr, { ouiRegistry: INJECTED_REGISTRY });
+    assert.equal(out.devEui, FIX.seeedDevEui);
+    assert.equal(out.joinEui, FIX.seeedJoinEui);
+    assert.equal(out.vendor.id, 'seeed');
+  });
+
+  test('createParser binds options into a closure', () => {
+    const parseWithRegistry = createParser({ ouiRegistry: INJECTED_REGISTRY });
+    const out = parseWithRegistry(`LW:D0:${FIX.ttnJoinEui}:${FIX.draginoDevEui}:AB12`);
+    assert.equal(out.vendor.id, 'dragino');
+  });
+
+  test('createParser still throws QrParseError on bad input', () => {
+    const parseWithRegistry = createParser({ ouiRegistry: INJECTED_REGISTRY });
+    assert.throws(() => parseWithRegistry('garbage'), QrParseError);
+  });
+
+  test('omitting ouiRegistry falls back to Node fs path (unchanged behavior)', () => {
+    // Same call without opts — relies on the bundled snapshot via fs.
+    const out = parse(`LW:D0:${FIX.ttnJoinEui}:${FIX.draginoDevEui}:AB12`);
+    assert.equal(out.vendor.id, 'dragino');
   });
 });
 

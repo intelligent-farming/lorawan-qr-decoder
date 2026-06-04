@@ -23,6 +23,9 @@
  *
  * @packageDocumentation
  */
+import { type OuiRegistry } from '@intelligentfarming/oui-registry';
+/** Re-export so callers don't have to depend on `@intelligentfarming/oui-registry` directly. */
+export type { OuiRegistry };
 /** Strategy that produced a successful parse. */
 export type ParseSource = 'tr005' | 'lwdp' | 'json' | 'key-value' | 'hex-scan';
 /** Vendor identified from the DevEUI's IEEE OUI. */
@@ -61,6 +64,17 @@ export interface QrParseResult {
     /** Original input string. */
     raw: string;
 }
+/**
+ * Options accepted by {@link parse}, {@link createParser}, and {@link detectVendor}.
+ *
+ * Browsers and other environments without Node's `fs` should pass `ouiRegistry`
+ * with a registry imported directly from `@intelligentfarming/oui-registry/data/ouis.json`.
+ * Node callers can omit it and the bundled snapshot is loaded on demand via `fs`.
+ */
+export interface ParseOptions {
+    /** OUI registry for vendor identification. See module docs for the browser-vs-Node split. */
+    ouiRegistry?: OuiRegistry;
+}
 /** Thrown when no strategy can extract at least a DevEUI from the input. */
 export declare class QrParseError extends Error {
     readonly raw: string;
@@ -86,10 +100,13 @@ export declare const KNOWN_LORAWAN_VENDORS: Record<string, string>;
  * MA-L / MA-M / MA-S assignments) to `@intelligentfarming/oui-registry`,
  * then layers on this module's LoRaWAN-specific vendor catalog.
  *
- * @param devEui 16-character hex DevEUI (case-insensitive).
+ * @param devEui   16-character hex DevEUI (case-insensitive).
+ * @param registry Optional OUI registry. When provided, the lookup runs against
+ *                 it directly (browser-safe). When omitted, falls back to the
+ *                 Node-only bundled snapshot via `fs` — which fails in browsers.
  * @returns A {@link VendorInfo} on match, or `undefined` if the OUI is unknown.
  */
-export declare const detectVendor: (devEui: string) => VendorInfo | undefined;
+export declare const detectVendor: (devEui: string, registry?: OuiRegistry) => VendorInfo | undefined;
 /**
  * Decode a LoRaWAN device QR string. Tries TR005, then JSON, then key/value,
  * then a hex-scan disambiguated by OUI registry lookup.
@@ -112,7 +129,22 @@ export declare const detectVendor: (devEui: string) => VendorInfo | undefined;
  * // → { devEui, joinEui, appKey, source: 'key-value', vendor: …, raw: … }
  * ```
  */
-export declare const parse: (qr: string) => QrParseResult;
+export declare const parse: (qr: string, opts?: ParseOptions) => QrParseResult;
+/**
+ * Bind {@link ParseOptions} into a closure and return a parser that doesn't
+ * require the options on every call. Designed for browser callers that import
+ * the OUI registry JSON once at startup.
+ *
+ * @example
+ * ```ts
+ * import ouis from '@intelligentfarming/oui-registry/data/ouis.json';
+ * import { createParser } from '@intelligentfarming/lorawan-qr-decoder';
+ *
+ * const parse = createParser({ ouiRegistry: ouis });
+ * parse(qrFromCamera);   // no second arg needed
+ * ```
+ */
+export declare const createParser: (opts: ParseOptions) => ((qr: string) => QrParseResult);
 /** Input accepted by {@link encode} to produce a TR005 v1.0 QR code string. */
 export interface EncodeInput {
     /** DevEUI — 16 hex chars (case-insensitive, separators allowed). */

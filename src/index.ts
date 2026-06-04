@@ -24,10 +24,17 @@
  * @packageDocumentation
  */
 
-import { detectVendor as registryDetectVendor } from '@intelligentfarming/oui-registry';
+import {
+  detectVendor as registryDetectVendor,
+  lookup as registryLookup,
+  type OuiRegistry,
+} from '@intelligent-farming/oui-registry';
 import {
   parseDevEui, parseJoinEui, normalize, CredentialFormatError,
-} from '@intelligentfarming/lorawan-credential-format';
+} from '@intelligent-farming/lorawan-credential-format';
+
+/** Re-export so callers don't have to depend on `@intelligent-farming/oui-registry` directly. */
+export type { OuiRegistry };
 
 /* -------------------------------------------------------------------------- */
 /* Public types                                                                */
@@ -74,6 +81,18 @@ export interface QrParseResult {
   raw: string;
 }
 
+/**
+ * Options accepted by {@link parse}, {@link createParser}, and {@link detectVendor}.
+ *
+ * Browsers and other environments without Node's `fs` should pass `ouiRegistry`
+ * with a registry imported directly from `@intelligent-farming/oui-registry/data/ouis.json`.
+ * Node callers can omit it and the bundled snapshot is loaded on demand via `fs`.
+ */
+export interface ParseOptions {
+  /** OUI registry for vendor identification. See module docs for the browser-vs-Node split. */
+  ouiRegistry?: OuiRegistry;
+}
+
 /** Thrown when no strategy can extract at least a DevEUI from the input. */
 export class QrParseError extends Error {
   readonly raw: string;
@@ -117,14 +136,17 @@ export const KNOWN_LORAWAN_VENDORS: Record<string, string> = {
  * vendor slug when {@link KNOWN_LORAWAN_VENDORS} has an entry for it.
  *
  * Delegates the underlying registry lookup (longest-prefix-match across
- * MA-L / MA-M / MA-S assignments) to `@intelligentfarming/oui-registry`,
+ * MA-L / MA-M / MA-S assignments) to `@intelligent-farming/oui-registry`,
  * then layers on this module's LoRaWAN-specific vendor catalog.
  *
- * @param devEui 16-character hex DevEUI (case-insensitive).
+ * @param devEui   16-character hex DevEUI (case-insensitive).
+ * @param registry Optional OUI registry. When provided, the lookup runs against
+ *                 it directly (browser-safe). When omitted, falls back to the
+ *                 Node-only bundled snapshot via `fs` — which fails in browsers.
  * @returns A {@link VendorInfo} on match, or `undefined` if the OUI is unknown.
  */
-export const detectVendor = (devEui: string): VendorInfo | undefined => {
-  const match = registryDetectVendor(devEui);
+export const detectVendor = (devEui: string, registry?: OuiRegistry): VendorInfo | undefined => {
+  const match = registry ? registryLookup(registry, devEui) : registryDetectVendor(devEui);
   if (!match) return undefined;
   const id = KNOWN_LORAWAN_VENDORS[devEui.toUpperCase().slice(0, 6)];
   return { oui: match.oui, name: match.name, knownLorawanVendor: !!id, id };
@@ -142,7 +164,7 @@ export const detectVendor = (devEui: string): VendorInfo | undefined => {
  *
  * @example
  * ```ts
- * import { parse } from '@intelligentfarming/lorawan-qr-decoder';
+ * import { parse } from '@intelligent-farming/lorawan-qr-decoder';
  *
  * // TR005 standard
  * parse('LW:D0:70B3D57ED0000001:A84041035660E3AA:AB12');
@@ -156,7 +178,7 @@ export const detectVendor = (devEui: string): VendorInfo | undefined => {
  * // → { devEui, joinEui, appKey, source: 'key-value', vendor: …, raw: … }
  * ```
  */
-export const parse = (qr: string): QrParseResult => {
+export const parse = (qr: string, opts: ParseOptions = {}): QrParseResult => {
   if (typeof qr !== 'string' || qr.length === 0) {
     throw new QrParseError(String(qr ?? ''), []);
   }
@@ -165,13 +187,31 @@ export const parse = (qr: string): QrParseResult => {
 
   for (const strat of STRATEGIES) {
     attempted.push(strat.source);
-    const partial = strat.run(raw);
+    const partial = strat.run(raw, opts);
     if (partial) {
-      const finalized = finalize(partial, strat.source, raw);
+      const finalized = finalize(partial, strat.source, raw, opts);
       if (finalized) return finalized;
     }
   }
   throw new QrParseError(raw, attempted);
+};
+
+/**
+ * Bind {@link ParseOptions} into a closure and return a parser that doesn't
+ * require the options on every call. Designed for browser callers that import
+ * the OUI registry JSON once at startup.
+ *
+ * @example
+ * ```ts
+ * import ouis from '@intelligent-farming/oui-registry/data/ouis.json';
+ * import { createParser } from '@intelligent-farming/lorawan-qr-decoder';
+ *
+ * const parse = createParser({ ouiRegistry: ouis });
+ * parse(qrFromCamera);   // no second arg needed
+ * ```
+ */
+export const createParser = (opts: ParseOptions): ((qr: string) => QrParseResult) => {
+  return (qr: string) => parse(qr, opts);
 };
 
 /* -------------------------------------------------------------------------- */
@@ -316,7 +356,7 @@ const extractKeyValues = (obj: Record<string, unknown>): Partial<QrParseResult> 
  * 32-hex tokens are assigned to `appKey`; a second one (if present) becomes
  * `nwkKey`. Order in the source string is preserved.
  */
-const parseHexScan = (raw: string): Partial<QrParseResult> | null => {
+const parseHexScan = (raw: string, opts?: ParseOptions): Partial<QrParseResult> | null => {
   // Pass 1 (high confidence) — explicit boundaries. Matches hex runs of exactly
   // 16 or 32 chars that are bracketed by non-hex on both sides, so a
   // separator-delimited "DevEUI <space> AppKey" string disambiguates cleanly.
@@ -332,7 +372,7 @@ const parseHexScan = (raw: string): Partial<QrParseResult> | null => {
   if (eui.length === 0 && key.length > 0) {
     for (let i = 0; i < key.length; i++) {
       const k = key[i];
-      if (detectVendor(k.slice(0, 16))) {
+      if (detectVendor(k.slice(0, 16), opts?.ouiRegistry)) {
         eui.push(k.slice(0, 16), k.slice(16));
         key.splice(i, 1);
         i--;
@@ -385,7 +425,7 @@ const parseHexScan = (raw: string): Partial<QrParseResult> | null => {
   let devEui = eui[0];
   let bestScore = -1;
   for (const e of eui) {
-    const v = detectVendor(e);
+    const v = detectVendor(e, opts?.ouiRegistry);
     const score = v ? (v.knownLorawanVendor ? 2 : 1) : 0;
     if (score > bestScore) { bestScore = score; devEui = e; }
   }
@@ -405,7 +445,7 @@ const parseHexScan = (raw: string): Partial<QrParseResult> | null => {
 
 interface Strategy {
   source: ParseSource;
-  run: (raw: string) => Partial<QrParseResult> | null;
+  run: (raw: string, opts?: ParseOptions) => Partial<QrParseResult> | null;
 }
 
 const STRATEGIES: Strategy[] = [
@@ -420,7 +460,7 @@ const HEX16 = /^[0-9A-F]{16}$/;
 const HEX32 = /^[0-9A-F]{32}$/;
 const HEX4 = /^[0-9A-F]{4}$/;
 
-const finalize = (partial: Partial<QrParseResult>, source: ParseSource, raw: string): QrParseResult | null => {
+const finalize = (partial: Partial<QrParseResult>, source: ParseSource, raw: string, opts?: ParseOptions): QrParseResult | null => {
   if (!partial.devEui) return null;
   const devEui = partial.devEui.toUpperCase();
   if (!HEX16.test(devEui)) return null;
@@ -443,7 +483,7 @@ const finalize = (partial: Partial<QrParseResult>, source: ParseSource, raw: str
   if (partial.serialNumber) out.serialNumber = partial.serialNumber;
   if (partial.ownerToken) out.ownerToken = partial.ownerToken;
   if (partial.proprietary) out.proprietary = partial.proprietary;
-  const vendor = detectVendor(devEui);
+  const vendor = detectVendor(devEui, opts?.ouiRegistry);
   if (vendor) out.vendor = vendor;
   return out;
 };

@@ -1,10 +1,18 @@
 {
-  "name": "@intelligentfarming/lorawan-qr-decoder",
+  "name": "@intelligent-farming/lorawan-qr-decoder",
   "version": "0.1.0",
   "description": "Decode the QR code printed on a LoRaWAN device into a structured object of EUIs and keys. Implements the LoRa Alliance TR005 standard and falls back to brand-aware heuristics (Dragino, Milesight, RAK, …) for non-conforming vendors.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/intelligent-farming/lorawan-qr-decoder.git"
+  },
+  "homepage": "https://github.com/intelligent-farming/lorawan-qr-decoder#readme",
+  "bugs": {
+    "url": "https://github.com/intelligent-farming/lorawan-qr-decoder/issues"
+  },
   "files": [
     "dist/"
   ],
@@ -18,8 +26,8 @@
     "docs": "typedoc && mv docs/README.md docs/api-doc.md"
   },
   "dependencies": {
-    "@intelligentfarming/oui-registry": "file:../oui-registry",
-    "@intelligentfarming/lorawan-credential-format": "file:../lorawan-credential-format"
+    "@intelligent-farming/oui-registry": "file:../oui-registry",
+    "@intelligent-farming/lorawan-credential-format": "file:../lorawan-credential-format"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
