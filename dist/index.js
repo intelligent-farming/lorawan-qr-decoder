@@ -26,8 +26,8 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.encodeLwdp = exports.encode = exports.QrEncodeError = exports.createParser = exports.parse = exports.detectVendor = exports.KNOWN_LORAWAN_VENDORS = exports.QrParseError = void 0;
-const oui_registry_1 = require("@intelligentfarming/oui-registry");
-const lorawan_credential_format_1 = require("@intelligentfarming/lorawan-credential-format");
+const oui_registry_1 = require("@intelligent-farming/oui-registry");
+const lorawan_credential_format_1 = require("@intelligent-farming/lorawan-credential-format");
 /** Thrown when no strategy can extract at least a DevEUI from the input. */
 class QrParseError extends Error {
     constructor(raw, attempted) {
@@ -66,7 +66,7 @@ exports.KNOWN_LORAWAN_VENDORS = {
  * vendor slug when {@link KNOWN_LORAWAN_VENDORS} has an entry for it.
  *
  * Delegates the underlying registry lookup (longest-prefix-match across
- * MA-L / MA-M / MA-S assignments) to `@intelligentfarming/oui-registry`,
+ * MA-L / MA-M / MA-S assignments) to `@intelligent-farming/oui-registry`,
  * then layers on this module's LoRaWAN-specific vendor catalog.
  *
  * @param devEui   16-character hex DevEUI (case-insensitive).
@@ -94,7 +94,7 @@ exports.detectVendor = detectVendor;
  *
  * @example
  * ```ts
- * import { parse } from '@intelligentfarming/lorawan-qr-decoder';
+ * import { parse } from '@intelligent-farming/lorawan-qr-decoder';
  *
  * // TR005 standard
  * parse('LW:D0:70B3D57ED0000001:A84041035660E3AA:AB12');
@@ -133,8 +133,8 @@ exports.parse = parse;
  *
  * @example
  * ```ts
- * import ouis from '@intelligentfarming/oui-registry/data/ouis.json';
- * import { createParser } from '@intelligentfarming/lorawan-qr-decoder';
+ * import ouis from '@intelligent-farming/oui-registry/data/ouis.json';
+ * import { createParser } from '@intelligent-farming/lorawan-qr-decoder';
  *
  * const parse = createParser({ ouiRegistry: ouis });
  * parse(qrFromCamera);   // no second arg needed

@@ -26,8 +26,8 @@
     "docs": "typedoc && mv docs/README.md docs/api-doc.md"
   },
   "dependencies": {
-    "@intelligent-farming/oui-registry": "file:../oui-registry",
-    "@intelligent-farming/lorawan-credential-format": "file:../lorawan-credential-format"
+    "@intelligent-farming/oui-registry": "^0.1.0",
+    "@intelligent-farming/lorawan-credential-format": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
