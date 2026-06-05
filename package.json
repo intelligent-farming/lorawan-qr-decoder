@@ -1,6 +1,6 @@
 {
   "name": "@intelligent-farming/lorawan-qr-decoder",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Decode the QR code printed on a LoRaWAN device into a structured object of EUIs and keys. Implements the LoRa Alliance TR005 standard and falls back to brand-aware heuristics (Dragino, Milesight, RAK, …) for non-conforming vendors.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
